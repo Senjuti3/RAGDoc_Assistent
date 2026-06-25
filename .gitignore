@@ -1,0 +1,6 @@
+﻿.env
+.ipynb_checkpoints/
+.virtual_documents/
+data/vector_store/
+__pycache__/
+*.pyc

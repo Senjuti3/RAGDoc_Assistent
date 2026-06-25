@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Document Assistant</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- Welcome Overlay Page -->
+    <div class="welcome-overlay" id="welcomeOverlay">
+        <div class="welcome-card">
+            <div class="welcome-badge">
+                <i class="fa-solid fa-book-open"></i>
+            </div>
+            <h1>RAGDoc Assistant</h1>
+            <p class="welcome-headline">Welcome to your vintage research room.</p>
+            <p class="welcome-desc">
+                Drop any large PDF, Word document, or text file here. Ask questions and extract answers instantly, bypassing hundreds of pages of reading.
+            </p>
+            <button class="btn btn-welcome" id="letsGoBtn">
+                Let's Go <i class="fa-solid fa-feather-pointed"></i>
+            </button>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <!-- Sidebar for document management -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <i class="fa-solid fa-brain logo-icon"></i>
+                    <span>RAGDoc Assistant</span>
+                </div>
+            </div>
+
+            <!-- Upload Box -->
+            <div class="section upload-section">
+                <h3><i class="fa-solid fa-file-arrow-up"></i> Upload Document</h3>
+                <div class="upload-dropzone" id="dropzone">
+                    <input type="file" id="fileInput" accept=".pdf,.docx,.txt" style="display: none;">
+                    <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
+                    <p class="upload-text">Drag & drop files here or <span class="browse-link">browse</span></p>
+                    <p class="upload-formats">Supports PDF, DOCX, TXT</p>
+                </div>
+                <!-- Progress Container -->
+                <div class="upload-progress-container" id="progressContainer" style="display: none;">
+                    <div class="progress-details">
+                        <span class="file-name" id="progressFileName">file.pdf</span>
+                        <span class="percentage" id="progressPercent">0%</span>
+                    </div>
+                    <div class="progress-bar-wrapper">
+                        <div class="progress-bar" id="progressBar"></div>
+                    </div>
+                    <p class="status-text" id="uploadStatusText">Uploading and indexing...</p>
+                </div>
+            </div>
+
+            <!-- Uploaded Documents List -->
+            <div class="section documents-section">
+                <div class="section-title-row">
+                    <h3><i class="fa-solid fa-folder-open"></i> Indexed Files</h3>
+                    <span class="doc-count-badge" id="docCount">0</span>
+                </div>
+                <div class="document-list-wrapper">
+                    <ul class="document-list" id="documentList">
+                        <!-- Populated by JavaScript -->
+                        <li class="empty-list-message">No documents indexed yet.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Sidebar Footer Controls -->
+            <div class="sidebar-footer">
+                <button class="btn btn-danger" id="clearBtn">
+                    <i class="fa-solid fa-trash-can"></i> Clear All Documents
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <!-- Chat Header -->
+            <header class="chat-header">
+                <div class="header-info">
+                    <h2>Knowledge Base Chat</h2>
+                    <p class="header-subtitle">Ask questions based on your uploaded documents</p>
+                </div>
+                <!-- Control Toggle for References -->
+                <div class="reference-toggle-container">
+                    <span class="toggle-label">Show Reference Sources</span>
+                    <label class="switch">
+                        <input type="checkbox" id="referenceToggle" checked>
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+            </header>
+
+            <!-- Chat Message Feed -->
+            <div class="chat-feed" id="chatFeed">
+                <div class="message assistant-message welcome-message">
+                    <div class="message-avatar">
+                        <i class="fa-solid fa-robot"></i>
+                    </div>
+                    <div class="message-content">
+                        <p>Welcome! I'm your RAG Document Assistant.</p>
+                        <p>To get started, upload any PDF, Word (.docx), or Text (.txt) file in the sidebar. Once uploaded, ask me anything, and I'll answer using the information in those documents!</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat Input Area -->
+            <div class="chat-input-wrapper">
+                <form class="chat-input-form" id="chatForm">
+                    <textarea 
+                        id="chatInput" 
+                        placeholder="Type your question here... (Shift + Enter for new line)" 
+                        rows="1" 
+                        required
+                    ></textarea>
+                    <button type="submit" class="btn btn-send" id="sendBtn" title="Send Question">
+                        <i class="fa-solid fa-paper-plane"></i>
+                    </button>
+                </form>
+                <div class="chat-footer-note">
+                    Powered by RAG & a strong LLM
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals or Popups if needed -->
+    <div class="notification-toast" id="toast"></div>
+
+    <!-- App JS -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
