@@ -202,7 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ----------------------------------------------------
     async function fetchIndexedFiles() {
         try {
-            const res = await fetch('/api/files', {
+            const res = await fetch('/files', {
                 headers: { 'X-Session-ID': sessionId }
             });
             const data = await res.json();
