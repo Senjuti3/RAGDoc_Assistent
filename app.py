@@ -5,6 +5,8 @@ import docx
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
+import torch
+torch.set_num_threads(1)
 
 # Load env variables from .env
 load_dotenv()
