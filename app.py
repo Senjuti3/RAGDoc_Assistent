@@ -35,11 +35,16 @@ os.makedirs(UPLOAD_BASE_FOLDER, exist_ok=True)
 class EmbeddingManager:
     def __init__(self, model_name="all-MiniLM-L6-v2"):
         self.model_name = model_name
-        print(f"[*] Loading embedding model: {self.model_name}...")
-        self.model = SentenceTransformer(self.model_name)
-        print("[*] Embedding model loaded successfully.")
+        self.model = None   # do not load at startup
+
+    def _load_model(self):
+        if self.model is None:
+            print(f"[*] Loading embedding model: {self.model_name}...")
+            self.model = SentenceTransformer(self.model_name)
+            print("[*] Embedding model loaded successfully.")
 
     def generate_embeddings(self, texts):
+        self._load_model()
         return self.model.encode(texts, show_progress_bar=False)
 
 
@@ -194,7 +199,11 @@ def get_files():
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
-    session_id = request.headers.get('X-Session-ID')
+    session_id = (
+        request.headers.get('X-Session-ID')
+        or (request.get_json(silent=True) or {}).get('session_id')
+        or request.form.get('session_id')
+    )
     if not session_id:
         return jsonify({"success": False, "error": "Missing X-Session-ID header"}), 400
 

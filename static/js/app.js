@@ -485,4 +485,16 @@ document.addEventListener('DOMContentLoaded', () => {
             toast.classList.remove('active');
         }, 4000);
     }
+
+    // ----------------------------------------------------
+    // Auto-clear backend session data when tab/window closes
+    // ----------------------------------------------------
+    window.addEventListener('beforeunload', () => {
+        if (!sessionId) return;
+
+        const data = new FormData();
+        data.append('session_id', sessionId);
+
+        navigator.sendBeacon('/api/clear', data);
+    });
 });
