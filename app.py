@@ -14,7 +14,7 @@ import docx
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
 from supabase import create_client, Client
-from google import genai
+import google.generativeai as genai
 
 
 # -------------------------
@@ -51,7 +51,7 @@ app.permanent_session_lifetime = timedelta(hours=8)
 # Clients
 # -------------------------
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
 # -------------------------
 # File / chunk config
@@ -155,12 +155,12 @@ def get_embeddings(texts):
     embeddings = []
     for text in texts:
         try:
-            response = gemini_client.models.embed_content(
-                model="gemini-embedding-001",
-                contents=text
+            result = genai.embed_content(
+                model="models/embedding-001",
+                content=text,
+                task_type="retrieval_document"
             )
-            # response.embeddings[0].values
-            vector = response.embeddings[0].values
+            vector = result["embedding"]
             embeddings.append(vector)
         except Exception as e:
             raise ValueError(f"Embedding error: {str(e)}")
