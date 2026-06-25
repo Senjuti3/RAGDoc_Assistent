@@ -1,187 +1,198 @@
 import os
 import uuid
-import shutil
-import requests
-import docx
+import tempfile
+from datetime import timedelta
+from urllib.parse import urlparse
 
-from flask import Flask, request, jsonify, render_template
+import requests
+from flask import Flask, render_template, request, jsonify, session
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
+from pypdf import PdfReader
+import docx
 
-from langchain_core.documents import Document
-from langchain_community.document_loaders.pdf import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
-
 from supabase import create_client, Client
+from google import genai
 
-# ----------------------------------------------------
-# Load environment
-# ----------------------------------------------------
+
+# -------------------------
+# Load environment variables
+# -------------------------
 load_dotenv()
 
-app = Flask(__name__)
-
-# ----------------------------------------------------
-# Config
-# ----------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_BASE_FOLDER = os.path.join(BASE_DIR, "data", "uploads")
-ALLOWED_EXTENSIONS = {"pdf", "docx", "txt"}
-
-app.config["UPLOAD_BASE_FOLDER"] = UPLOAD_BASE_FOLDER
-app.config["TEMPLATES_AUTO_RELOAD"] = True
-os.makedirs(UPLOAD_BASE_FOLDER, exist_ok=True)
-
-# ----------------------------------------------------
-# Environment variables
-# ----------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN")
-HF_EMBED_MODEL = os.environ.get(
-    "HF_EMBED_MODEL",
-    "sentence-transformers/all-MiniLM-L6-v2"
-)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set.")
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY is missing.")
+if not SUPABASE_URL:
+    raise ValueError("SUPABASE_URL is missing.")
+if not SUPABASE_KEY:
+    raise ValueError("SUPABASE_KEY is missing.")
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY is missing.")
 
-if not HF_API_TOKEN:
-    raise ValueError("HF_API_TOKEN must be set.")
+# -------------------------
+# Flask app
+# -------------------------
+app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "rag_secret_key_change_this")
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25MB max upload
+app.permanent_session_lifetime = timedelta(hours=8)
 
+# -------------------------
+# Clients
+# -------------------------
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ----------------------------------------------------
+# -------------------------
+# File / chunk config
+# -------------------------
+UPLOAD_EXTENSIONS = {".pdf", ".txt", ".docx"}
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
+TOP_K = 5
+
+
+# =========================================================
 # Helpers
-# ----------------------------------------------------
+# =========================================================
+def get_session_id():
+    """Create/get a unique session id for this browser session."""
+    if "session_id" not in session:
+        session["session_id"] = str(uuid.uuid4())
+        session.permanent = True
+    return session["session_id"]
+
+
 def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in UPLOAD_EXTENSIONS
 
 
-def load_docx_file(file_path):
-    doc = docx.Document(file_path)
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                if cell.text.strip():
-                    paragraphs.append(cell.text.strip())
-
-    full_text = "\n\n".join(paragraphs)
-    return [Document(page_content=full_text, metadata={"source": file_path, "page": 1})]
-
-
-def load_txt_file(file_path):
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        text = f.read()
-    return [Document(page_content=text, metadata={"source": file_path, "page": 1})]
+def read_pdf(file_path):
+    text_parts = []
+    try:
+        reader = PdfReader(file_path)
+        for i, page in enumerate(reader.pages, start=1):
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                text_parts.append((page_text, i))
+    except Exception as e:
+        raise ValueError(f"Error reading PDF: {str(e)}")
+    return text_parts
 
 
-def load_documents(file_path, file_extension):
-    documents = []
-
-    if file_extension == "pdf":
-        loader = PyPDFLoader(file_path)
-        documents = loader.load()
-    elif file_extension == "docx":
-        documents = load_docx_file(file_path)
-    elif file_extension == "txt":
-        documents = load_txt_file(file_path)
-
-    return documents
+def read_txt(file_path):
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        return [(content, 1)]
+    except Exception as e:
+        raise ValueError(f"Error reading TXT: {str(e)}")
 
 
-def split_documents(documents):
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50
+def read_docx(file_path):
+    try:
+        document = docx.Document(file_path)
+        paragraphs = [p.text for p in document.paragraphs if p.text.strip()]
+        content = "\n".join(paragraphs)
+        return [(content, 1)]
+    except Exception as e:
+        raise ValueError(f"Error reading DOCX: {str(e)}")
+
+
+def extract_text_from_file(file_path, ext):
+    ext = ext.lower()
+    if ext == ".pdf":
+        return read_pdf(file_path)
+    elif ext == ".txt":
+        return read_txt(file_path)
+    elif ext == ".docx":
+        return read_docx(file_path)
+    else:
+        raise ValueError("Unsupported file type.")
+
+
+def chunk_documents(text_pages):
+    """
+    text_pages: list of tuples -> [(text, page_num), ...]
+    returns list of dicts:
+      [{"content": "...", "page": 1}, ...]
+    """
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP
     )
-    return text_splitter.split_documents(documents)
+
+    chunks = []
+    for text, page_num in text_pages:
+        if not text.strip():
+            continue
+        split_chunks = splitter.split_text(text)
+        for ch in split_chunks:
+            if ch.strip():
+                chunks.append({
+                    "content": ch,
+                    "page": page_num
+                })
+    return chunks
 
 
-# ----------------------------------------------------
-# Remote embeddings via Hugging Face Inference API
-# ----------------------------------------------------
 def get_embeddings(texts):
     """
-    Returns list of embeddings for a list of texts using Hugging Face Inference API.
+    Gemini embeddings for a list of texts.
+    Returns list of embedding vectors.
     """
-    url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{HF_EMBED_MODEL}"
-    headers = {
-        "Authorization": f"Bearer {HF_API_TOKEN}"
-    }
-
-    # HF can accept a single string or a list; for stability we'll do one by one
     embeddings = []
     for text in texts:
-        payload = {
-            "inputs": text,
-            "options": {"wait_for_model": True}
-        }
-        response = requests.post(url, headers=headers, json=payload, timeout=120)
-        response.raise_for_status()
-        embedding = response.json()
-
-        # For some models HF may return nested list [ [..] ]
-        if isinstance(embedding, list) and len(embedding) > 0 and isinstance(embedding[0], list):
-            embedding = embedding[0]
-
-        embeddings.append(embedding)
-
+        try:
+            response = gemini_client.models.embed_content(
+                model="gemini-embedding-001",
+                contents=text
+            )
+            # response.embeddings[0].values
+            vector = response.embeddings[0].values
+            embeddings.append(vector)
+        except Exception as e:
+            raise ValueError(f"Embedding error: {str(e)}")
     return embeddings
 
 
-# ----------------------------------------------------
-# Supabase vector DB helpers
-# ----------------------------------------------------
-def insert_chunks_to_supabase(session_id, chunks, embeddings):
+def store_chunks_in_supabase(session_id, filename, chunks, embeddings):
     rows = []
-
-    for chunk, embedding in zip(chunks, embeddings):
-        metadata = chunk.metadata or {}
-        source_path = metadata.get("source", "")
-        source_filename = os.path.basename(source_path) if source_path else "unknown"
-        page = metadata.get("page", 1)
-
+    for chunk, emb in zip(chunks, embeddings):
         rows.append({
             "session_id": session_id,
-            "source_filename": source_filename,
-            "page": page,
-            "content": chunk.page_content,
-            "embedding": embedding
+            "source_filename": filename,
+            "page": chunk["page"],
+            "content": chunk["content"],
+            "embedding": emb
         })
 
-    if rows:
-        supabase.table("rag_documents").insert(rows).execute()
+    # Insert in batches
+    batch_size = 50
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i:i + batch_size]
+        result = supabase.table("rag_documents").insert(batch).execute()
+        # if needed, result.data contains inserted rows
 
 
-def get_indexed_files(session_id):
-    result = (
-        supabase
-        .table("rag_documents")
-        .select("source_filename")
-        .eq("session_id", session_id)
-        .execute()
-    )
+def search_similar_chunks(session_id, question, top_k=TOP_K):
+    """
+    1) embed question
+    2) call Supabase RPC match function
+    """
+    query_embedding = get_embeddings([question])[0]
 
-    if not result.data:
-        return []
-
-    filenames = sorted({row["source_filename"] for row in result.data if row.get("source_filename")})
-    return filenames
-
-
-def clear_session_documents(session_id):
-    supabase.table("rag_documents").delete().eq("session_id", session_id).execute()
-
-
-def query_similar_chunks(session_id, query_embedding, top_k=5):
     result = supabase.rpc(
         "match_rag_documents",
         {
@@ -191,201 +202,246 @@ def query_similar_chunks(session_id, query_embedding, top_k=5):
         }
     ).execute()
 
-    return result.data or []
+    if not result.data:
+        return []
+
+    return result.data
 
 
-# ----------------------------------------------------
-# File ingestion pipeline
-# ----------------------------------------------------
-def ingest_file(session_id, file_path, file_extension):
-    documents = load_documents(file_path, file_extension)
-    if not documents:
-        return 0
+def build_context(retrieved_rows):
+    """
+    Convert retrieved DB rows into context text.
+    """
+    context_parts = []
+    for row in retrieved_rows:
+        filename = row.get("source_filename", "Unknown")
+        page = row.get("page", 1)
+        content = row.get("content", "")
+        context_parts.append(f"[Source: {filename}, Page: {page}]\n{content}")
 
-    chunks = split_documents(documents)
-    if not chunks:
-        return 0
-
-    texts = [chunk.page_content for chunk in chunks]
-    embeddings = get_embeddings(texts)
-
-    insert_chunks_to_supabase(session_id, chunks, embeddings)
-    return len(chunks)
+    return "\n\n".join(context_parts)
 
 
-# ----------------------------------------------------
-# Routes
-# ----------------------------------------------------
-@app.route("/")
-def home():
-    return render_template("index.html")
-
-
-@app.route("/api/files", methods=["GET"])
-def get_files():
-    session_id = request.headers.get("X-Session-ID")
-    if not session_id:
-        return jsonify({"success": False, "error": "Missing X-Session-ID header"}), 400
-
-    files = get_indexed_files(session_id)
-    return jsonify({"success": True, "files": files})
-
-
-@app.route("/api/upload", methods=["POST"])
-def upload_file():
-    session_id = (
-        request.headers.get("X-Session-ID")
-        or (request.get_json(silent=True) or {}).get("session_id")
-        or request.form.get("session_id")
+def ask_groq(question, context):
+    llm = ChatGroq(
+        groq_api_key=GROQ_API_KEY,
+        model=GROQ_MODEL,
+        temperature=0.1,
+        max_tokens=1024
     )
 
-    if not session_id:
-        return jsonify({"success": False, "error": "Missing session ID"}), 400
+    prompt = f"""
+You are a helpful RAG document assistant.
 
-    if "file" not in request.files:
-        return jsonify({"success": False, "error": "No file part in the request"}), 400
+Use ONLY the provided context to answer the user's question.
+If the answer is not present in the context, say clearly:
+"I could not find that information in the uploaded documents."
 
-    file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"success": False, "error": "No file selected"}), 400
-
-    if not allowed_file(file.filename):
-        return jsonify({
-            "success": False,
-            "error": f"File type not supported. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"
-        }), 400
-
-    try:
-        user_upload_dir = os.path.join(app.config["UPLOAD_BASE_FOLDER"], secure_filename(session_id))
-        os.makedirs(user_upload_dir, exist_ok=True)
-
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(user_upload_dir, filename)
-        file.save(file_path)
-
-        file_ext = filename.rsplit(".", 1)[1].lower()
-        chunks_added = ingest_file(session_id, file_path, file_ext)
-
-        return jsonify({
-            "success": True,
-            "filename": filename,
-            "chunks": chunks_added,
-            "message": f"Successfully uploaded and indexed '{filename}' ({chunks_added} chunks)."
-        })
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"success": False, "error": f"Error indexing file: {str(e)}"}), 500
-
-
-@app.route("/api/query", methods=["POST"])
-def query_rag():
-    session_id = request.headers.get("X-Session-ID")
-    if not session_id:
-        return jsonify({"success": False, "error": "Missing X-Session-ID header"}), 400
-
-    data = request.json or {}
-    question = data.get("question")
-    show_references = data.get("show_references", False)
-
-    if not question or not question.strip():
-        return jsonify({"success": False, "error": "Question cannot be empty"}), 400
-
-    try:
-        indexed_files = get_indexed_files(session_id)
-        if not indexed_files:
-            return jsonify({
-                "success": True,
-                "answer": "Please upload and index some documents first before asking questions.",
-                "references": []
-            })
-
-        query_embedding = get_embeddings([question])[0]
-        retrieved_docs = query_similar_chunks(session_id, query_embedding, top_k=5)
-
-        context = "\n\n".join([
-            f"Source: {doc['source_filename']} (Page {doc['page']})\nContent: {doc['content']}"
-            for doc in retrieved_docs
-        ])
-
-        prompt = f"""Use the following retrieved context segments from documents to answer the question.
-If the context doesn't contain enough information to answer, state that you cannot find the answer in the uploaded files.
-Be concise, factually accurate, and prioritize information found in the context.
+Be concise, accurate, and mention source file/page when useful.
 
 Context:
 {context}
 
 Question:
 {question}
+"""
 
-Answer:"""
+    response = llm.invoke(prompt)
+    return response.content.strip()
 
-        if not GROQ_API_KEY:
-            return jsonify({"success": False, "error": "GROQ_API_KEY is not configured"}), 500
 
-        llm = ChatGroq(
-            groq_api_key=GROQ_API_KEY,
-            model=GROQ_MODEL,
-            temperature=0.1,
-            max_tokens=1024
-        )
+def get_indexed_files_for_session(session_id):
+    """
+    Get distinct uploaded files for this session.
+    """
+    result = supabase.table("rag_documents") \
+        .select("source_filename") \
+        .eq("session_id", session_id) \
+        .execute()
 
-        response = llm.invoke(prompt)
-        answer = response.content
+    files = []
+    seen = set()
 
-        references = []
-        if show_references:
-            references = [
-                {
-                    "id": doc["id"],
-                    "text": doc["content"],
-                    "source": doc["source_filename"],
-                    "page": doc["page"],
-                    "similarity": round(float(doc["similarity"]), 4)
-                }
-                for doc in retrieved_docs
-            ]
+    if result.data:
+        for row in result.data:
+            fname = row.get("source_filename")
+            if fname and fname not in seen:
+                seen.add(fname)
+                files.append(fname)
+
+    return files
+
+
+def clear_session_documents(session_id):
+    supabase.table("rag_documents").delete().eq("session_id", session_id).execute()
+
+
+# =========================================================
+# Routes
+# =========================================================
+@app.route("/")
+def index():
+    session_id = get_session_id()
+    indexed_files = get_indexed_files_for_session(session_id)
+    return render_template("index.html", indexed_files=indexed_files)
+
+
+@app.route("/api/files", methods=["GET"])
+def api_files():
+    session_id = get_session_id()
+    files = get_indexed_files_for_session(session_id)
+    return jsonify({
+        "success": True,
+        "files": files
+    })
+
+
+@app.route("/upload", methods=["POST"])
+def upload_file():
+    session_id = get_session_id()
+
+    if "file" not in request.files:
+        return jsonify({"success": False, "error": "No file part found."}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"success": False, "error": "No file selected."}), 400
+
+    filename = secure_filename(file.filename)
+    if not allowed_file(filename):
+        return jsonify({"success": False, "error": "Unsupported file type. Use PDF, TXT, or DOCX."}), 400
+
+    ext = os.path.splitext(filename)[1].lower()
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            file.save(tmp.name)
+            temp_path = tmp.name
+
+        # Extract
+        text_pages = extract_text_from_file(temp_path, ext)
+
+        # Merge check
+        full_text = "\n".join([t for t, _ in text_pages]).strip()
+        if not full_text:
+            return jsonify({"success": False, "error": "Could not extract readable text from this file."}), 400
+
+        # Chunk
+        chunks = chunk_documents(text_pages)
+        if not chunks:
+            return jsonify({"success": False, "error": "No valid chunks were generated from this file."}), 400
+
+        # Embed
+        texts = [c["content"] for c in chunks]
+        embeddings = get_embeddings(texts)
+
+        # Store in Supabase
+        store_chunks_in_supabase(session_id, filename, chunks, embeddings)
+
+        # Return updated file list
+        files = get_indexed_files_for_session(session_id)
+
+        return jsonify({
+            "success": True,
+            "message": f"{filename} uploaded and indexed successfully.",
+            "filename": filename,
+            "num_chunks": len(chunks),
+            "files": files
+        })
+
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Error indexing file: {str(e)}"}), 500
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+@app.route("/ask", methods=["POST"])
+def ask_question():
+    session_id = get_session_id()
+
+    try:
+        data = request.get_json()
+        if not data or "question" not in data:
+            return jsonify({"success": False, "error": "Question is required."}), 400
+
+        question = data["question"].strip()
+        if not question:
+            return jsonify({"success": False, "error": "Question cannot be empty."}), 400
+
+        files = get_indexed_files_for_session(session_id)
+        if not files:
+            return jsonify({"success": False, "error": "Please upload at least one document first."}), 400
+
+        retrieved = search_similar_chunks(session_id, question, top_k=TOP_K)
+        if not retrieved:
+            return jsonify({
+                "success": True,
+                "answer": "I could not find relevant information in the uploaded documents.",
+                "sources": []
+            })
+
+        context = build_context(retrieved)
+        answer = ask_groq(question, context)
+
+        sources = []
+        for row in retrieved:
+            sources.append({
+                "filename": row.get("source_filename"),
+                "page": row.get("page"),
+                "similarity": row.get("similarity")
+            })
 
         return jsonify({
             "success": True,
             "answer": answer,
-            "references": references
+            "sources": sources
         })
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"success": False, "error": f"Error running query: {str(e)}"}), 500
+        return jsonify({"success": False, "error": f"Error answering question: {str(e)}"}), 500
 
 
-@app.route("/api/clear", methods=["POST"])
-def clear_db():
-    session_id = (
-        request.headers.get("X-Session-ID")
-        or (request.get_json(silent=True) or {}).get("session_id")
-        or request.form.get("session_id")
-    )
-
-    if not session_id:
-        return jsonify({"success": False, "error": "Missing session ID"}), 400
-
+@app.route("/clear", methods=["POST"])
+def clear_documents():
+    session_id = get_session_id()
     try:
         clear_session_documents(session_id)
-
-        user_upload_dir = os.path.join(app.config["UPLOAD_BASE_FOLDER"], secure_filename(session_id))
-        if os.path.exists(user_upload_dir):
-            shutil.rmtree(user_upload_dir)
-
-        return jsonify({
-            "success": True,
-            "message": "Database and uploaded documents cleared successfully."
-        })
-
+        return jsonify({"success": True, "message": "All uploaded documents cleared for this session."})
     except Exception as e:
-        return jsonify({"success": False, "error": f"Error resetting database: {str(e)}"}), 500
+        return jsonify({"success": False, "error": f"Error clearing documents: {str(e)}"}), 500
 
 
+@app.route("/cleanup-session", methods=["POST"])
+def cleanup_session():
+    """
+    Optional endpoint called when tab closes / page unloads.
+    It clears that browser session's uploaded docs.
+    """
+    session_id = session.get("session_id")
+    if session_id:
+        try:
+            clear_session_documents(session_id)
+        except Exception:
+            pass
+        session.pop("session_id", None)
+
+    return jsonify({"success": True})
+
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
+
+
+# =========================================================
+# Main
+# =========================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(debug=False, host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=True)
