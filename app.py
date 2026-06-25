@@ -149,14 +149,14 @@ def chunk_documents(text_pages):
 
 def get_embeddings(texts):
     """
-    Gemini embeddings for a list of texts.
-    Returns list of embedding vectors.
+    Create embeddings using Gemini via google-generativeai.
+    Returns a list of embedding vectors.
     """
     embeddings = []
     for text in texts:
         try:
             result = genai.embed_content(
-                model="models/embedding-001",
+                model="models/text-embedding-004",
                 content=text,
                 task_type="retrieval_document"
             )
