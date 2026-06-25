@@ -302,7 +302,7 @@ Answer:"""
         model_name = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
         
         if not api_key:
-            return jsonify({"success": False, "error": "GROQ_API_KEY is not configured in .env"}), 500
+            return jsonify({"success": False, "error": "GROQ_API_KEY is not configured in"}), 500
 
         llm = ChatGroq(
             groq_api_key=api_key,
