@@ -14,8 +14,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
 
 from supabase import create_client, Client
-import torch
-torch.set_num_threads(1)
 
 # ----------------------------------------------------
 # Load environment
