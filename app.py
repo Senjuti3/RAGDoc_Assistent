@@ -29,13 +29,14 @@ app.config['UPLOAD_BASE_FOLDER'] = UPLOAD_BASE_FOLDER
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 os.makedirs(UPLOAD_BASE_FOLDER, exist_ok=True)
 
+
 # ----------------------------------------------------
-# Singleton Model & Vector Store Managers
+# Embedding & Vector Store Managers
 # ----------------------------------------------------
 class EmbeddingManager:
     def __init__(self, model_name="all-MiniLM-L6-v2"):
         self.model_name = model_name
-        self.model = None   # do not load at startup
+        self.model = None   # lazy load
 
     def _load_model(self):
         if self.model is None:
@@ -56,7 +57,6 @@ class VectorStoreManager:
         print(f"[*] Vector store client initialized at: {self.persist_directory}")
 
     def _get_collection_name(self, session_id):
-        # Format session ID into a safe collection name (alphanumeric, underscores, 3-63 chars)
         safe_id = str(session_id).replace('-', '_')
         return f"col_{safe_id}"[:63]
 
@@ -70,7 +70,7 @@ class VectorStoreManager:
     def add_documents(self, session_id, documents, embeddings):
         if not documents:
             return
-        
+
         collection = self.get_collection(session_id)
         ids = []
         metadatas = []
@@ -84,6 +84,7 @@ class VectorStoreManager:
             metadata = dict(doc.metadata)
             metadata["doc_index"] = i
             metadata["content_length"] = len(doc.page_content)
+
             if "source" in metadata:
                 metadata["source_filename"] = os.path.basename(metadata["source"])
             else:
@@ -93,7 +94,6 @@ class VectorStoreManager:
             documents_content.append(doc.page_content)
             embeddings_list.append(embedding.tolist())
 
-        # Insert in a single batch
         collection.add(
             ids=ids,
             metadatas=metadatas,
@@ -105,14 +105,16 @@ class VectorStoreManager:
     def get_indexed_files(self, session_id):
         collection = self.get_collection(session_id)
         all_data = collection.get(include=["metadatas"])
+
         if not all_data or not all_data.get("metadatas"):
             return []
-        
+
         filenames = set()
         for meta in all_data["metadatas"]:
             filename = meta.get("source_filename")
             if filename:
                 filenames.add(filename)
+
         return sorted(list(filenames))
 
     def reset_collection(self, session_id):
@@ -122,14 +124,29 @@ class VectorStoreManager:
             print(f"[*] Deleted collection: {col_name}")
         except Exception as e:
             print(f"[!] Warning deleting collection {col_name}: {e}")
-        
-        # Trigger recreation
+
+        # recreate empty collection
         self.get_collection(session_id)
 
 
-# Initialize managers
-embedding_manager = EmbeddingManager()
-vector_store = VectorStoreManager()
+# ----------------------------------------------------
+# Lazy singletons for Render-friendly startup
+# ----------------------------------------------------
+_embedding_manager = None
+_vector_store = None
+
+def get_embedding_manager():
+    global _embedding_manager
+    if _embedding_manager is None:
+        _embedding_manager = EmbeddingManager()
+    return _embedding_manager
+
+def get_vector_store():
+    global _vector_store
+    if _vector_store is None:
+        _vector_store = VectorStoreManager()
+    return _vector_store
+
 
 # ----------------------------------------------------
 # Document Ingestion Helpers
@@ -137,27 +154,30 @@ vector_store = VectorStoreManager()
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+
 def load_docx_file(file_path):
     doc = docx.Document(file_path)
     paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    
+
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 if cell.text.strip():
                     paragraphs.append(cell.text.strip())
-                    
+
     full_text = "\n\n".join(paragraphs)
     return [Document(page_content=full_text, metadata={"source": file_path, "page": 1})]
+
 
 def load_txt_file(file_path):
     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
         text = f.read()
     return [Document(page_content=text, metadata={"source": file_path, "page": 1})]
 
+
 def ingest_file(session_id, file_path, file_extension):
     documents = []
-    
+
     if file_extension == 'pdf':
         loader = PyPDFLoader(file_path)
         documents = loader.load()
@@ -165,7 +185,7 @@ def ingest_file(session_id, file_path, file_extension):
         documents = load_docx_file(file_path)
     elif file_extension == 'txt':
         documents = load_txt_file(file_path)
-        
+
     if not documents:
         return 0
 
@@ -176,10 +196,11 @@ def ingest_file(session_id, file_path, file_extension):
         return 0
 
     texts = [chunk.page_content for chunk in chunks]
-    embeddings = embedding_manager.generate_embeddings(texts)
-    vector_store.add_documents(session_id, chunks, embeddings)
-    
+    embeddings = get_embedding_manager().generate_embeddings(texts)
+    get_vector_store().add_documents(session_id, chunks, embeddings)
+
     return len(chunks)
+
 
 # ----------------------------------------------------
 # Flask Routes
@@ -188,14 +209,16 @@ def ingest_file(session_id, file_path, file_extension):
 def home():
     return render_template('index.html')
 
+
 @app.route('/api/files', methods=['GET'])
 def get_files():
     session_id = request.headers.get('X-Session-ID')
     if not session_id:
         return jsonify({"success": False, "error": "Missing X-Session-ID header"}), 400
-        
-    files = vector_store.get_indexed_files(session_id)
+
+    files = get_vector_store().get_indexed_files(session_id)
     return jsonify({"success": True, "files": files})
+
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
@@ -204,24 +227,28 @@ def upload_file():
         or (request.get_json(silent=True) or {}).get('session_id')
         or request.form.get('session_id')
     )
+
     if not session_id:
-        return jsonify({"success": False, "error": "Missing X-Session-ID header"}), 400
+        return jsonify({"success": False, "error": "Missing session ID"}), 400
 
     if 'file' not in request.files:
         return jsonify({"success": False, "error": "No file part in the request"}), 400
-        
+
     file = request.files['file']
     if file.filename == '':
         return jsonify({"success": False, "error": "No file selected"}), 400
 
     if not allowed_file(file.filename):
-        return jsonify({"success": False, "error": f"File type not supported. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
+        return jsonify({
+            "success": False,
+            "error": f"File type not supported. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"
+        }), 400
 
     try:
         # Create user-specific upload directory
         user_upload_dir = os.path.join(app.config['UPLOAD_BASE_FOLDER'], secure_filename(session_id))
         os.makedirs(user_upload_dir, exist_ok=True)
-        
+
         filename = secure_filename(file.filename)
         file_path = os.path.join(user_upload_dir, filename)
         file.save(file_path)
@@ -230,15 +257,17 @@ def upload_file():
         chunks_added = ingest_file(session_id, file_path, file_ext)
 
         return jsonify({
-            "success": True, 
-            "filename": filename, 
+            "success": True,
+            "filename": filename,
             "chunks": chunks_added,
             "message": f"Successfully uploaded and indexed '{filename}' ({chunks_added} chunks)."
         })
+
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": f"Error indexing file: {str(e)}"}), 500
+
 
 @app.route('/api/query', methods=['POST'])
 def query_rag():
@@ -253,7 +282,7 @@ def query_rag():
     if not question or not question.strip():
         return jsonify({"success": False, "error": "Question cannot be empty"}), 400
 
-    collection = vector_store.get_collection(session_id)
+    collection = get_vector_store().get_collection(session_id)
     if collection.count() == 0:
         return jsonify({
             "success": True,
@@ -263,9 +292,9 @@ def query_rag():
 
     try:
         # 1. Generate Query Embeddings
-        query_embeddings = embedding_manager.generate_embeddings([question])[0]
+        query_embeddings = get_embedding_manager().generate_embeddings([question])[0]
 
-        # 2. Query Chroma Vector store (retrieve top 5 results)
+        # 2. Query Chroma Vector store
         results = collection.query(
             query_embeddings=[query_embeddings.tolist()],
             n_results=5
@@ -278,11 +307,11 @@ def query_rag():
             documents = results["documents"][0]
             distances = results["distances"][0]
 
-            for i, (doc_id, metadata, doc_text, distance) in enumerate(zip(ids, metadatas, documents, distances)):
+            for doc_id, metadata, doc_text, distance in zip(ids, metadatas, documents, distances):
                 similarity_score = float(1.0 - distance)
                 source = metadata.get("source_filename", "unknown")
                 page = metadata.get("page", 1)
-                
+
                 retrieved_docs.append({
                     "id": doc_id,
                     "text": doc_text,
@@ -292,10 +321,13 @@ def query_rag():
                 })
 
         # 3. Form Context & Prompt
-        context = "\n\n".join([f"Source: {doc['source']} (Page {doc['page']})\nContent: {doc['text']}" for doc in retrieved_docs])
+        context = "\n\n".join([
+            f"Source: {doc['source']} (Page {doc['page']})\nContent: {doc['text']}"
+            for doc in retrieved_docs
+        ])
 
         prompt = f"""Use the following retrieved context segments from documents to answer the question.
-If the context doesn't contain enough information to answer, state that you cannot find the answer in the uploaded files. 
+If the context doesn't contain enough information to answer, state that you cannot find the answer in the uploaded files.
 Be concise, factually accurate, and prioritize information found in the context.
 
 Context:
@@ -309,9 +341,9 @@ Answer:"""
         # 4. Connect to Groq
         api_key = os.environ.get("GROQ_API_KEY")
         model_name = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
-        
+
         if not api_key:
-            return jsonify({"success": False, "error": "GROQ_API_KEY is not configured in"}), 500
+            return jsonify({"success": False, "error": "GROQ_API_KEY is not configured"}), 500
 
         llm = ChatGroq(
             groq_api_key=api_key,
@@ -320,13 +352,11 @@ Answer:"""
             max_tokens=1024
         )
 
-        # Call LLM
+        # 5. Call LLM
         response = llm.invoke(prompt)
         answer = response.content
 
-        references = []
-        if show_references:
-            references = retrieved_docs
+        references = retrieved_docs if show_references else []
 
         return jsonify({
             "success": True,
@@ -339,16 +369,22 @@ Answer:"""
         traceback.print_exc()
         return jsonify({"success": False, "error": f"Error running query: {str(e)}"}), 500
 
+
 @app.route('/api/clear', methods=['POST'])
 def clear_db():
-    session_id = request.headers.get('X-Session-ID')
+    session_id = (
+        request.headers.get('X-Session-ID')
+        or (request.get_json(silent=True) or {}).get('session_id')
+        or request.form.get('session_id')
+    )
+
     if not session_id:
-        return jsonify({"success": False, "error": "Missing X-Session-ID header"}), 400
+        return jsonify({"success": False, "error": "Missing session ID"}), 400
 
     try:
         # Clear vector database for this user
-        vector_store.reset_collection(session_id)
-        
+        get_vector_store().reset_collection(session_id)
+
         # Delete upload files for this user
         user_upload_dir = os.path.join(app.config['UPLOAD_BASE_FOLDER'], secure_filename(session_id))
         if os.path.exists(user_upload_dir):
