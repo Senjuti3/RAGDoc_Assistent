@@ -133,7 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
         formData.append('file', file);
 
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/upload', true);
+        xhr.open('POST', '/upload', true);
         
         // Add Session ID Header for database isolation
         xhr.setRequestHeader('X-Session-ID', sessionId);
@@ -246,7 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
     clearBtn.addEventListener('click', async () => {
         if (confirm('Are you sure you want to clear all indexed documents? This will permanently delete uploaded files and empty the vector store.')) {
             try {
-                const res = await fetch('/api/clear', { 
+                const res = await fetch('/clear', { 
                     method: 'POST',
                     headers: { 'X-Session-ID': sessionId }
                 });
@@ -299,7 +299,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             const showReferences = referenceToggle.checked;
-            const response = await fetch('/api/query', {
+            const response = await fetch('/ask', {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',
@@ -314,7 +314,7 @@ document.addEventListener('DOMContentLoaded', () => {
             typingEl.remove();
 
             if (data.success) {
-                appendAssistantMessage(data.answer, data.references);
+                appendAssistantMessage(data.answer, data.sources);
             } else {
                 appendAssistantMessage(`<span style="color: var(--color-danger);"><i class="fa-solid fa-triangle-exclamation"></i> Error: ${data.error}</span>`);
             }
@@ -495,6 +495,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const data = new FormData();
         data.append('session_id', sessionId);
 
-        navigator.sendBeacon('/api/clear', data);
+       navigator.sendBeacon('/cleanup-session');
     });
 });
