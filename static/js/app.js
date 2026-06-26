@@ -69,6 +69,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Toggle showing references globally and dynamically
+    if (referenceToggle) {
+        referenceToggle.addEventListener('change', () => {
+            const showReferences = referenceToggle.checked;
+            const containers = document.querySelectorAll('.sources-container');
+            containers.forEach(container => {
+                container.style.display = showReferences ? 'block' : 'none';
+            });
+        });
+    }
+
     // ----------------------------------------------------
     // Ingestion & File Upload Logic
     // ----------------------------------------------------
@@ -395,8 +406,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // Render sources if available and requested
         if (references && references.length > 0) {
             const uniqueId = 'collapse-' + uuidv4();
+            const showReferences = referenceToggle ? referenceToggle.checked : true;
             html += `
-                <div class="sources-container">
+                <div class="sources-container" style="display: ${showReferences ? 'block' : 'none'};">
                     <div class="sources-header" onclick="toggleSources('${uniqueId}')">
                         <span><i class="fa-solid fa-circle-info"></i> View Source References (${references.length})</span>
                         <i class="fa-solid fa-chevron-down" id="arrow-${uniqueId}"></i>
