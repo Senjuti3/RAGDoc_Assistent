@@ -31,14 +31,18 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2")
 
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY is missing.")
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").lower()
+GEMINI_QA_MODEL = os.environ.get("GEMINI_QA_MODEL", "models/gemini-2.5-flash")
+
 if not SUPABASE_URL:
     raise ValueError("SUPABASE_URL is missing.")
 if not SUPABASE_KEY:
     raise ValueError("SUPABASE_KEY is missing.")
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY is missing.")
+
+if LLM_PROVIDER == "groq" and not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY is missing, but LLM_PROVIDER is set to 'groq'.")
 
 # -------------------------
 # Flask app
@@ -148,24 +152,7 @@ def chunk_documents(text_pages):
     return chunks
 
 
-# def get_embeddings(texts):
-#     """
-#     Create embeddings using Gemini via google-generativeai.
-#     Returns a list of embedding vectors.
-#     """
-#     embeddings = []
-#     for text in texts:
-#         try:
-#             result = genai.embed_content(
-#                 model="models/text-embedding-004",
-#                 content=text,
-#                 task_type="retrieval_document"
-#             )
-#             vector = result["embedding"]
-#             embeddings.append(vector)
-#         except Exception as e:
-#             raise ValueError(f"Embedding error: {str(e)}")
-#     return embeddings
+
 def get_embeddings(texts, task_type="retrieval_document"):
     print(f"[DEBUG] Creating embeddings for {len(texts)} chunks using {GEMINI_EMBEDDING_MODEL}...")
     embeddings = []
@@ -209,23 +196,7 @@ def store_chunks_in_supabase(session_id, filename, chunks, embeddings):
         print(f"[DEBUG] Supabase insert result: {result}")
     print("[DEBUG] Insertion completed successfully.")
 
-# def store_chunks_in_supabase(session_id, filename, chunks, embeddings):
-#     rows = []
-#     for chunk, emb in zip(chunks, embeddings):
-#         rows.append({
-#             "session_id": session_id,
-#             "source_filename": filename,
-#             "page": chunk["page"],
-#             "content": chunk["content"],
-#             "embedding": emb
-#         })
 
-#     # Insert in batches
-#     batch_size = 50
-#     for i in range(0, len(rows), batch_size):
-#         batch = rows[i:i + batch_size]
-#         result = supabase.table("rag_documents").insert(batch).execute()
-#         # if needed, result.data contains inserted rows
 
 
 def search_similar_chunks(session_id, question, top_k=TOP_K):
@@ -290,6 +261,42 @@ Question:
 
     response = llm.invoke(prompt)
     return response.content.strip()
+
+
+def ask_gemini(question, context):
+    model = genai.GenerativeModel(
+        model_name=GEMINI_QA_MODEL,
+        generation_config={
+            "temperature": 0.1,
+            "max_output_tokens": 1024
+        }
+    )
+
+    prompt = f"""
+You are a helpful RAG document assistant.
+
+Use ONLY the provided context to answer the user's question.
+If the answer is not present in the context, say clearly:
+"I could not find that information in the uploaded documents."
+
+Be concise, accurate, and mention source file/page when useful.
+
+Context:
+{context}
+
+Question:
+{question}
+"""
+
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
+
+def ask_llm(question, context):
+    if LLM_PROVIDER == "groq":
+        return ask_groq(question, context)
+    else:
+        return ask_gemini(question, context)
 
 
 def get_indexed_files_for_session(session_id):
@@ -430,7 +437,7 @@ def ask_question():
             })
 
         context = build_context(retrieved)
-        answer = ask_groq(question, context)
+        answer = ask_llm(question, context)
 
         sources = []
         for row in retrieved:
