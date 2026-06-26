@@ -147,25 +147,46 @@ def chunk_documents(text_pages):
     return chunks
 
 
+# def get_embeddings(texts):
+#     """
+#     Create embeddings using Gemini via google-generativeai.
+#     Returns a list of embedding vectors.
+#     """
+#     embeddings = []
+#     for text in texts:
+#         try:
+#             result = genai.embed_content(
+#                 model="models/text-embedding-004",
+#                 content=text,
+#                 task_type="retrieval_document"
+#             )
+#             vector = result["embedding"]
+#             embeddings.append(vector)
+#         except Exception as e:
+#             raise ValueError(f"Embedding error: {str(e)}")
+#     return embeddings
+
 def get_embeddings(texts):
-    """
-    Create embeddings using Gemini via google-generativeai.
-    Returns a list of embedding vectors.
-    """
     embeddings = []
-    for text in texts:
+    for i, text in enumerate(texts):
         try:
+            print(f"[DEBUG] Embedding chunk {i+1}/{len(texts)}")
             result = genai.embed_content(
                 model="models/text-embedding-004",
                 content=text,
                 task_type="retrieval_document"
             )
+            print(f"[DEBUG] Raw embedding response type: {type(result)}")
+            print(f"[DEBUG] Raw embedding response: {result}")
+
             vector = result["embedding"]
+            print(f"[DEBUG] Embedding length: {len(vector)}")
+
             embeddings.append(vector)
         except Exception as e:
+            print(f"[DEBUG] Embedding failed: {e}")
             raise ValueError(f"Embedding error: {str(e)}")
     return embeddings
-
 
 def store_chunks_in_supabase(session_id, filename, chunks, embeddings):
     rows = []
@@ -178,12 +199,34 @@ def store_chunks_in_supabase(session_id, filename, chunks, embeddings):
             "embedding": emb
         })
 
-    # Insert in batches
+    print(f"[DEBUG] Total rows to insert: {len(rows)}")
+    if rows:
+        print(f"[DEBUG] First row embedding length: {len(rows[0]['embedding'])}")
+
     batch_size = 50
     for i in range(0, len(rows), batch_size):
         batch = rows[i:i + batch_size]
+        print(f"[DEBUG] Inserting batch {i//batch_size + 1}, size={len(batch)}")
         result = supabase.table("rag_documents").insert(batch).execute()
-        # if needed, result.data contains inserted rows
+        print(f"[DEBUG] Supabase insert result: {result}")
+
+# def store_chunks_in_supabase(session_id, filename, chunks, embeddings):
+#     rows = []
+#     for chunk, emb in zip(chunks, embeddings):
+#         rows.append({
+#             "session_id": session_id,
+#             "source_filename": filename,
+#             "page": chunk["page"],
+#             "content": chunk["content"],
+#             "embedding": emb
+#         })
+
+#     # Insert in batches
+#     batch_size = 50
+#     for i in range(0, len(rows), batch_size):
+#         batch = rows[i:i + batch_size]
+#         result = supabase.table("rag_documents").insert(batch).execute()
+#         # if needed, result.data contains inserted rows
 
 
 def search_similar_chunks(session_id, question, top_k=TOP_K):
