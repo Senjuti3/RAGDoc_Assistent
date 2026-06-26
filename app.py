@@ -29,6 +29,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2")
 
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY is missing.")
@@ -165,27 +166,24 @@ def chunk_documents(text_pages):
 #         except Exception as e:
 #             raise ValueError(f"Embedding error: {str(e)}")
 #     return embeddings
-
-def get_embeddings(texts):
+def get_embeddings(texts, task_type="retrieval_document"):
+    print(f"[DEBUG] Creating embeddings for {len(texts)} chunks using {GEMINI_EMBEDDING_MODEL}...")
     embeddings = []
     for i, text in enumerate(texts):
         try:
             print(f"[DEBUG] Embedding chunk {i+1}/{len(texts)}")
             result = genai.embed_content(
-                model="models/text-embedding-004",
+                model=GEMINI_EMBEDDING_MODEL,
                 content=text,
-                task_type="retrieval_document"
+                task_type=task_type,
+                output_dimensionality=768
             )
-            print(f"[DEBUG] Raw embedding response type: {type(result)}")
-            print(f"[DEBUG] Raw embedding response: {result}")
-
             vector = result["embedding"]
-            print(f"[DEBUG] Embedding length: {len(vector)}")
-
             embeddings.append(vector)
         except Exception as e:
-            print(f"[DEBUG] Embedding failed: {e}")
+            print(f"[DEBUG] Embedding failed on chunk {i+1}: {e}")
             raise ValueError(f"Embedding error: {str(e)}")
+    print("[DEBUG] Embeddings created successfully.")
     return embeddings
 
 def store_chunks_in_supabase(session_id, filename, chunks, embeddings):
@@ -209,6 +207,7 @@ def store_chunks_in_supabase(session_id, filename, chunks, embeddings):
         print(f"[DEBUG] Inserting batch {i//batch_size + 1}, size={len(batch)}")
         result = supabase.table("rag_documents").insert(batch).execute()
         print(f"[DEBUG] Supabase insert result: {result}")
+    print("[DEBUG] Insertion completed successfully.")
 
 # def store_chunks_in_supabase(session_id, filename, chunks, embeddings):
 #     rows = []
@@ -234,7 +233,7 @@ def search_similar_chunks(session_id, question, top_k=TOP_K):
     1) embed question
     2) call Supabase RPC match function
     """
-    query_embedding = get_embeddings([question])[0]
+    query_embedding = get_embeddings([question], task_type="retrieval_query")[0]
 
     result = supabase.rpc(
         "match_rag_documents",
@@ -330,6 +329,7 @@ def index():
 
 
 @app.route("/api/files", methods=["GET"])
+@app.route("/files", methods=["GET"])
 def api_files():
     session_id = get_session_id()
     files = get_indexed_files_for_session(session_id)
@@ -435,9 +435,10 @@ def ask_question():
         sources = []
         for row in retrieved:
             sources.append({
-                "filename": row.get("source_filename"),
+                "source": row.get("source_filename"),
                 "page": row.get("page"),
-                "similarity": row.get("similarity")
+                "similarity": row.get("similarity"),
+                "text": row.get("content")
             })
 
         return jsonify({
